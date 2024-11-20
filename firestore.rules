@@ -1,0 +1,72 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function canPurchaseLead(leadData) {
+      return leadData.status == 'New' && leadData.purchasedBy == null;
+    }
+
+    // Users collection rules
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && 
+        request.resource.data.role == 'user' &&
+        request.resource.data.status == 'active';
+      allow update: if (isOwner(userId) && 
+        request.resource.data.role == resource.data.role) || 
+        isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Leads collection rules
+    match /leads/{leadId} {
+      // Helper function for lead access
+      function canAccessPurchasedLead() {
+        return resource.data.purchasedBy == request.auth.uid || isAdmin();
+      }
+
+      // Anyone can create a lead (for the lead form)
+      allow create: if true;
+      
+      // Read access:
+      // - New leads are visible to everyone
+      // - Purchased leads are only visible to the purchaser and admins
+      allow read: if resource.data.status == 'New' || 
+        (isAuthenticated() && canAccessPurchasedLead());
+      
+      // Update access:
+      // - Only allow purchase if lead is new and not purchased
+      // - Only allow status updates by the purchaser
+      allow update: if isAuthenticated() && (
+        (canPurchaseLead(resource.data) && 
+         request.resource.data.status == 'Purchased' &&
+         request.resource.data.purchasedBy == request.auth.uid) ||
+        (resource.data.purchasedBy == request.auth.uid &&
+         request.resource.data.purchasedBy == resource.data.purchasedBy &&
+         request.resource.data.status == resource.data.status)
+      );
+      
+      // Only admins can delete leads
+      allow delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
